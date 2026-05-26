@@ -1,0 +1,27 @@
+{
+  "repository": "yulkalongneck/posthog",
+  "generatedAt": "2026-05-26T21:02:20.309Z",
+  "mergedAfter": "2026-02-25",
+  "mergedBefore": "2026-05-26",
+  "lookbackDays": 90,
+  "counts": {
+    "eligiblePullRequests": 0,
+    "rawPullRequestsFetched": 0,
+    "matchingPullRequestsBeforeFilters": 0,
+    "dateWindows": 1,
+    "githubRequests": 1
+  },
+  "filters": {
+    "includeContributors": true,
+    "excludedBots": true
+  },
+  "dateWindows": [
+    {
+      "startDate": "2026-02-25",
+      "endDate": "2026-05-26",
+      "totalCount": 0
+    }
+  ],
+  "ranking": [],
+  "pullRequests": []
+}

@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>PostHog Engineer Impact</title>
+    <link rel="stylesheet" href="./src/styles.css" />
+  </head>
+  <body>
+    <main class="app-shell">
+      <section class="toolbar" aria-label="Analysis controls">
+        <div class="repo-block">
+          <p class="eyebrow">GitHub repo</p>
+          <h1>PostHog engineer impact</h1>
+          <a href="https://github.com/yulkalongneck/posthog" target="_blank" rel="noreferrer">github.com/yulkalongneck/posthog</a>
+        </div>
+
+        <form id="controls-form" class="controls">
+          <label>
+            Lookback
+            <select id="lookback-days" name="lookbackDays">
+              <option value="90" selected>90 days</option>
+              <option value="180">180 days</option>
+              <option value="365">365 days</option>
+            </select>
+          </label>
+
+          <label class="token-field">
+            GitHub token
+            <input
+              id="github-token"
+              name="githubToken"
+              type="password"
+              autocomplete="off"
+              placeholder="Recommended for full 90+ day collection"
+            />
+          </label>
+
+          <label class="checkbox-row">
+            <input id="include-contributors" name="includeContributors" type="checkbox" checked />
+            Include outside contributors
+          </label>
+
+          <button id="fetch-button" type="submit">Fetch & rank</button>
+        </form>
+      </section>
+
+      <section class="score-settings" aria-label="Score weighting">
+        <div>
+          <p class="eyebrow">Quality weighting</p>
+          <h2>Prioritize the signals you care about</h2>
+        </div>
+
+        <div class="weight-grid">
+          <label>
+            Readability
+            <input data-weight="readability" type="range" min="0" max="100" value="25" />
+          </label>
+          <label>
+            Modularity
+            <input data-weight="modularity" type="range" min="0" max="100" value="25" />
+          </label>
+          <label>
+            Maintainability
+            <input data-weight="maintainability" type="range" min="0" max="100" value="25" />
+          </label>
+          <label>
+            Testability
+            <input data-weight="testability" type="range" min="0" max="100" value="25" />
+          </label>
+        </div>
+      </section>
+
+      <section class="status-row" aria-live="polite">
+        <div id="status-message" class="status-message">Ready to fetch merged pull requests from GitHub.</div>
+        <div id="analysis-summary" class="analysis-summary"></div>
+      </section>
+
+      <section id="ranking" class="ranking" aria-label="Top 5 engineers"></section>
+
+      <section class="method-panel" aria-label="Methodology">
+        <h2>Impact model</h2>
+        <p>
+          This dashboard scores merged PRs from public GitHub metadata. It favors PRs with clear problem and
+          change descriptions, focused maintainability work, modularity signals, and concrete testing evidence.
+          Commit counts and lines changed are deliberately excluded from the score. The fetcher pages complete
+          date windows so the selected period is fully covered, with 90 days as the minimum lookback. Forks with
+          no PR records fall back to recent commits from the same repository.
+        </p>
+      </section>
+    </main>
+
+    <script type="module" src="./src/app.js"></script>
+  </body>
+</html>
