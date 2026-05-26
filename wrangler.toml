@@ -1,6 +1,9 @@
 name = "posthog-engineer-impact-dashboard"
 compatibility_date = "2026-05-26"
 
+[build]
+command = "npm run build"
+
 [assets]
 directory = "./dist"
 not_found_handling = "single-page-application"

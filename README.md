@@ -16,19 +16,19 @@ For fastest live fetches, provide a valid GitHub token. Token-backed requests us
 
 ## Deploy To Cloudflare
 
-Use this build command:
+Use this deploy command:
 
 ```sh
-npm run build
+npm run deploy
 ```
 
-Use this asset/output directory:
+`wrangler.toml` runs `npm run build` before deploy and points Workers assets at:
 
 ```sh
 dist
 ```
 
-Do not point Cloudflare Workers assets at the repository root. The repo root can contain `node_modules`, test files, and local export data. `wrangler.toml` is configured to deploy only `./dist`.
+If configuring Cloudflare’s dashboard manually, keep the deploy command as `npx wrangler deploy` or `npm run deploy`. Do not point Cloudflare Workers assets at the repository root. The repo root can contain `node_modules`, test files, and local export data. `wrangler.toml` is configured to build and deploy only `./dist`.
 
 ## Gather Data
 
