@@ -14,6 +14,22 @@ The dashboard does not read local data files for rankings. Click **Fetch live da
 
 For fastest live fetches, provide a valid GitHub token. Token-backed requests use GraphQL and ask only for the fields used by the impact model. Without a token, the app falls back to REST payloads.
 
+## Deploy To Cloudflare
+
+Use this build command:
+
+```sh
+npm run build
+```
+
+Use this asset/output directory:
+
+```sh
+dist
+```
+
+Do not point Cloudflare Workers assets at the repository root. The repo root can contain `node_modules`, test files, and local export data. `wrangler.toml` is configured to deploy only `./dist`.
+
 ## Gather Data
 
 ```sh

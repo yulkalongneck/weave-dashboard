@@ -4,6 +4,8 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "build": "node scripts/buildStatic.js",
+    "deploy": "npm run build && wrangler deploy",
     "start": "python3 -m http.server 5173",
     "test": "node --test",
     "collect:data": "node scripts/collectPosthogData.js"
