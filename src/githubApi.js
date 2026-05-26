@@ -6,6 +6,7 @@ const MAX_RESULTS_PER_PAGE = 100;
 const MIN_LOOKBACK_DAYS = 90;
 const GITHUB_SEARCH_RESULT_CAP = 1000;
 const MAX_RATE_LIMIT_WAIT_MS = 70_000;
+const COMMIT_PAGE_CONCURRENCY = 10;
 
 const PULL_REQUEST_SEARCH_QUERY = `
   query PullRequestSearch($query: String!, $after: String) {
@@ -216,19 +217,18 @@ export async function fetchRepositoryContributionsEssential({
     };
   }
 
-  const commitResult = await fetchRecentCommitsEssential({
+  const commitResult = await fetchRecentCommitsParallel({
     lookbackDays: normalizedLookbackDays,
     token,
     fetchImpl,
     onProgress,
     endDate,
-    initialRequestCount: collection.requestCount,
   });
 
   return {
     ...commitResult,
     sourceType: "commits",
-    dataSource: "graphql",
+    dataSource: "graphql-pr-search+parallel-rest-commits",
     contributions: commitResult.commits,
     pullRequests: commitResult.commits,
     totalMatchingPullRequests: collection.totalMatchingPullRequests,
@@ -285,6 +285,82 @@ export async function fetchRecentCommits({
     rawCommitCount: commits.length,
     requestCount: collection.requestCount,
     commitPages: Math.ceil(commits.length / MAX_RESULTS_PER_PAGE),
+    commits: uniqueCommits(commits)
+      .filter((commit) => commit.pull_request?.merged_at)
+      .filter((commit) => !isBot(commit.user))
+      .sort((left, right) => new Date(right.pull_request.merged_at) - new Date(left.pull_request.merged_at)),
+  };
+}
+
+export async function fetchRecentCommitsParallel({
+  lookbackDays = MIN_LOOKBACK_DAYS,
+  token,
+  fetchImpl = fetch,
+  onProgress = () => {},
+  endDate = new Date(),
+}) {
+  const requestedLookbackDays = Number(lookbackDays);
+  const normalizedLookbackDays = Number.isFinite(requestedLookbackDays)
+    ? Math.max(requestedLookbackDays, MIN_LOOKBACK_DAYS)
+    : MIN_LOOKBACK_DAYS;
+  const sinceDate = toDateOnly(daysAgo(normalizedLookbackDays, endDate));
+  const untilDate = toDateOnly(endDate);
+  const collection = createCollectionTracker(onProgress);
+  const firstPage = await fetchCommitPageWithHeaders({
+    sinceDate,
+    untilDate,
+    page: 1,
+    token,
+    fetchImpl,
+    collection,
+  });
+  const lastPage = parseLastPageFromLinkHeader(firstPage.headers) ?? 1;
+  const commits = [...firstPage.payload.map(normalizeCommit)];
+  let fetchedCount = commits.length;
+
+  collection.onProgress({
+    status: "parallel-commits-fetching",
+    page: 1,
+    totalPages: lastPage,
+    fetchedCount,
+    requestCount: collection.requestCount,
+  });
+
+  if (lastPage > 1) {
+    const remainingPages = Array.from({ length: lastPage - 1 }, (_, index) => index + 2);
+    const remainingCommits = await mapWithConcurrency(remainingPages, COMMIT_PAGE_CONCURRENCY, async (page) => {
+      const pageCommits = await fetchCommitPage({
+        sinceDate,
+        untilDate,
+        page,
+        token,
+        fetchImpl,
+        collection,
+      });
+
+      fetchedCount += pageCommits.length;
+      collection.onProgress({
+        status: "parallel-commits-fetching",
+        page,
+        totalPages: lastPage,
+        fetchedCount,
+        requestCount: collection.requestCount,
+      });
+
+      return pageCommits.map(normalizeCommit);
+    });
+
+    commits.push(...remainingCommits.flat());
+  }
+
+  return {
+    mergedAfter: sinceDate,
+    mergedBefore: untilDate,
+    lookbackDays: normalizedLookbackDays,
+    totalMatchingContributions: commits.length,
+    rawCommitCount: commits.length,
+    requestCount: collection.requestCount,
+    commitPages: lastPage,
     commits: uniqueCommits(commits)
       .filter((commit) => commit.pull_request?.merged_at)
       .filter((commit) => !isBot(commit.user))
@@ -555,7 +631,28 @@ async function fetchCommitPage({ sinceDate, untilDate, page, token, fetchImpl, c
   });
 }
 
+async function fetchCommitPageWithHeaders({ sinceDate, untilDate, page, token, fetchImpl, collection }) {
+  const url = new URL(`${GITHUB_API_ROOT}/repos/${REPOSITORY}/commits`);
+  url.searchParams.set("since", `${sinceDate}T00:00:00Z`);
+  url.searchParams.set("until", `${untilDate}T23:59:59Z`);
+  url.searchParams.set("per_page", String(MAX_RESULTS_PER_PAGE));
+  url.searchParams.set("page", String(page));
+
+  return fetchGitHubJsonWithHeaders({
+    url,
+    token,
+    fetchImpl,
+    collection,
+    rateLimitContext: { page, sourceType: "commits" },
+  });
+}
+
 async function fetchGitHubJson({ url, token, fetchImpl, collection, rateLimitContext }) {
+  const response = await fetchGitHubJsonWithHeaders({ url, token, fetchImpl, collection, rateLimitContext });
+  return response.payload;
+}
+
+async function fetchGitHubJsonWithHeaders({ url, token, fetchImpl, collection, rateLimitContext }) {
   for (let attempt = 0; attempt < 2; attempt += 1) {
     const response = await fetchImpl(url, {
       headers: buildHeaders(token),
@@ -582,7 +679,10 @@ async function fetchGitHubJson({ url, token, fetchImpl, collection, rateLimitCon
       throw await buildGitHubError(response);
     }
 
-    return response.json();
+    return {
+      payload: await response.json(),
+      headers: response.headers,
+    };
   }
 }
 
@@ -791,6 +891,46 @@ function normalizeGraphQlActor(actor, fallbackUrl) {
     avatar_url: actor.avatarUrl,
     html_url: actor.url,
   };
+}
+
+function parseLastPageFromLinkHeader(headers) {
+  const linkHeader = readHeader(headers, "link");
+
+  if (!linkHeader) {
+    return null;
+  }
+
+  const lastLink = linkHeader.split(",").find((part) => part.includes('rel="last"'));
+  const match = lastLink?.match(/[?&]page=(\d+)>;\s*rel="last"/);
+
+  return match ? Number(match[1]) : null;
+}
+
+function readHeader(headers, name) {
+  if (!headers) {
+    return null;
+  }
+
+  if (typeof headers.get === "function") {
+    return headers.get(name) ?? headers.get(name.toLowerCase());
+  }
+
+  return headers[name] ?? headers[name.toLowerCase()] ?? null;
+}
+
+async function mapWithConcurrency(items, concurrency, mapper) {
+  const results = new Array(items.length);
+  let nextIndex = 0;
+  const workers = Array.from({ length: Math.min(concurrency, items.length) }, async () => {
+    while (nextIndex < items.length) {
+      const currentIndex = nextIndex;
+      nextIndex += 1;
+      results[currentIndex] = await mapper(items[currentIndex], currentIndex);
+    }
+  });
+
+  await Promise.all(workers);
+  return results;
 }
 
 function splitDateRange(startDate, endDate) {

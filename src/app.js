@@ -193,6 +193,13 @@ function updateFetchProgress(progress) {
     return;
   }
 
+  if (progress.status === "parallel-commits-fetching") {
+    setStatus(
+      `No merged PRs found in this fork; fetching commit pages in parallel. Page ${progress.page} of ${progress.totalPages}, ${progress.fetchedCount.toLocaleString()} commits fetched.`,
+    );
+    return;
+  }
+
   if (progress.status === "graphql-scanned") {
     setStatus(
       `Scanned essential ${progress.sourceType} fields for ${progress.startDate} through ${progress.endDate}: ${progress.totalCount.toLocaleString()} matched; ${progress.requestCount} GraphQL requests so far.`,
@@ -220,7 +227,12 @@ function updateFetchProgress(progress) {
 }
 
 function buildSummary(result) {
-  const source = result.dataSource === "graphql" ? "essential GraphQL fields" : "REST payloads";
+  const source =
+    result.dataSource === "graphql"
+      ? "essential GraphQL fields"
+      : result.dataSource === "graphql-pr-search+parallel-rest-commits"
+        ? "GraphQL PR probe and parallel REST commit pages"
+        : "REST payloads";
 
   if (result.sourceType === "commits") {
     return `${result.contributions.length.toLocaleString()} eligible commits analyzed from ${result.mergedAfter} through ${result.mergedBefore}; 0 merged PRs were available in this fork; fetched via ${source}.`;

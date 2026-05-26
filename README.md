@@ -12,7 +12,7 @@ Then open `http://localhost:5173`.
 
 The dashboard does not read local data files for rankings. Click **Fetch live data** to pull the current GitHub API data directly.
 
-For fastest live fetches, provide a valid GitHub token. Token-backed requests use GraphQL and ask only for the fields used by the impact model. Without a token, the app falls back to REST payloads.
+For fastest live fetches, provide a valid GitHub token. Token-backed requests use GraphQL for PR metadata, then use capped parallel REST pagination for commit-heavy forks. Without a token, the app falls back to slower REST-only fetching.
 
 ## Deploy To Cloudflare
 
@@ -49,7 +49,7 @@ GITHUB_TOKEN=... npm run collect:data
 ## Notes
 
 - Data is fetched directly from GitHub for `yulkalongneck/posthog`.
-- Token-backed live fetches use GraphQL essential fields; no-token live fetches use REST.
+- Token-backed live fetches use GraphQL for PR metadata and parallel REST commit pagination when the fork has no PR records.
 - The fetcher recursively splits date windows and fully pages each window, avoiding GitHub Search's 1,000-result cap.
 - If the fork has no merged PR records in the selected window, the dashboard falls back to fully paged recent commits from the same repo.
 - The default and minimum lookback is 90 days.

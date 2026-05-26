@@ -42,18 +42,18 @@ test("fetches all pages across split date windows instead of sampling the first 
   );
 });
 
-test("uses GraphQL essential fields for token-backed contribution fetching", async () => {
+test("uses GraphQL PR probe and parallel REST pages for token-backed commit fallback", async () => {
   const requests = [];
   const fetchImpl = async (url, options) => {
-    const body = JSON.parse(options.body);
-    requests.push({ url, body });
+    if (String(url) === "https://api.github.com/graphql") {
+      const body = JSON.parse(options.body);
+      requests.push({ type: "graphql", body });
 
-    return {
-      ok: true,
-      status: 200,
-      headers: new Map(),
-      async json() {
-        if (body.query.includes("PullRequestSearch")) {
+      return {
+        ok: true,
+        status: 200,
+        headers: new Map(),
+        async json() {
           return {
             data: {
               rateLimit: { limit: 5000, remaining: 4999, resetAt: "2026-04-10T01:00:00Z", cost: 1 },
@@ -64,59 +64,28 @@ test("uses GraphQL essential fields for token-backed contribution fetching", asy
               },
             },
           };
+        },
+      };
+    }
+
+    const parsedUrl = new URL(url);
+    const page = Number(parsedUrl.searchParams.get("page"));
+    requests.push({ type: "rest", page });
+
+    return {
+      ok: true,
+      status: 200,
+      headers: new Map(page === 1 ? [["link", '<https://api.github.com/repos/yulkalongneck/posthog/commits?per_page=100&page=3>; rel="last"']] : []),
+      async json() {
+        if (page === 1) {
+          return Array.from({ length: 100 }, (_, index) => makeCommit(index + 1));
         }
 
-        return {
-          data: {
-            rateLimit: { limit: 5000, remaining: 4998, resetAt: "2026-04-10T01:00:00Z", cost: 1 },
-            repository: {
-              defaultBranchRef: {
-                target: {
-                  history: {
-                    totalCount: 2,
-                    pageInfo: { hasNextPage: false, endCursor: null },
-                    nodes: [
-                      {
-                        oid: "abcdef123456",
-                        abbreviatedOid: "abcdef1",
-                        url: "https://github.com/yulkalongneck/posthog/commit/abcdef123456",
-                        committedDate: "2026-04-01T00:00:00Z",
-                        messageHeadline: "fix(flags): clarify rollout validation",
-                        messageBody: "## Problem\nBad validation.\n\n## Changes\nAdded explicit validation.\n\n## How did you test this code?\nAdded unit tests.",
-                        author: {
-                          name: "Engineer",
-                          email: "engineer@example.com",
-                          user: {
-                            login: "engineer",
-                            avatarUrl: "https://example.com/avatar.png",
-                            url: "https://github.com/engineer",
-                          },
-                        },
-                      },
-                      {
-                        oid: "botdef123456",
-                        abbreviatedOid: "botdef1",
-                        url: "https://github.com/yulkalongneck/posthog/commit/botdef123456",
-                        committedDate: "2026-04-01T00:00:00Z",
-                        messageHeadline: "chore: generated update",
-                        messageBody: "",
-                        author: {
-                          name: "dependabot[bot]",
-                          email: "bot@example.com",
-                          user: {
-                            login: "dependabot[bot]",
-                            avatarUrl: "https://example.com/bot.png",
-                            url: "https://github.com/apps/dependabot",
-                          },
-                        },
-                      },
-                    ],
-                  },
-                },
-              },
-            },
-          },
-        };
+        if (page === 2) {
+          return Array.from({ length: 100 }, (_, index) => makeCommit(index + 101));
+        }
+
+        return [makeCommit(201), makeCommit(202, "dependabot[bot]", "Bot")];
       },
     };
   };
@@ -128,14 +97,17 @@ test("uses GraphQL essential fields for token-backed contribution fetching", asy
     endDate: new Date("2026-04-10T00:00:00Z"),
   });
 
-  assert.equal(result.dataSource, "graphql");
+  assert.equal(result.dataSource, "graphql-pr-search+parallel-rest-commits");
   assert.equal(result.sourceType, "commits");
-  assert.equal(result.requestCount, 2);
+  assert.equal(result.requestCount, 4);
   assert.equal(result.totalMatchingPullRequests, 0);
-  assert.equal(result.totalMatchingContributions, 2);
-  assert.equal(result.contributions.length, 1);
-  assert.equal(result.contributions[0].title, "fix(flags): clarify rollout validation");
-  assert.ok(requests.every((request) => request.url === "https://api.github.com/graphql"));
+  assert.equal(result.totalMatchingContributions, 202);
+  assert.equal(result.contributions.length, 201);
+  assert.ok(result.contributions.some((contribution) => contribution.title === "fix(flags): clarify rollout validation 201"));
+  assert.deepEqual(
+    requests.map((request) => (request.type === "graphql" ? request.type : `${request.type}:${request.page}`)),
+    ["graphql", "rest:1", "rest:2", "rest:3"],
+  );
 });
 
 function parseRequest(url) {
@@ -185,6 +157,28 @@ function makePullRequest(number) {
     },
     pull_request: {
       merged_at: "2026-03-01T00:00:00Z",
+    },
+  };
+}
+
+function makeCommit(number, login = `engineer-${number}`, type = "User") {
+  return {
+    sha: `abcdef${String(number).padStart(6, "0")}`,
+    html_url: `https://github.com/yulkalongneck/posthog/commit/abcdef${String(number).padStart(6, "0")}`,
+    commit: {
+      author: {
+        name: login,
+        email: `${login}@example.com`,
+        date: `2026-04-${String((number % 28) + 1).padStart(2, "0")}T00:00:00Z`,
+      },
+      message: `fix(flags): clarify rollout validation ${number}\n\n## Problem\nBad validation.\n\n## Changes\nAdded explicit validation.\n\n## How did you test this code?\nAdded unit tests.`,
+      comment_count: 0,
+    },
+    author: {
+      login,
+      type,
+      avatar_url: "https://example.com/avatar.png",
+      html_url: `https://github.com/${login}`,
     },
   };
 }
