@@ -33,7 +33,7 @@ renderEmptyState();
 
 async function fetchAndRenderRanking() {
   setLoading(true);
-  setStatus("Fetching every merged pull request in the selected date window...");
+  setStatus("Fetching live GitHub data for the selected date window...");
 
   try {
     const result = await fetchRepositoryContributions({
@@ -76,7 +76,9 @@ function renderEngineerCard(engineer, index, sourceType) {
     .map(([name, value]) => renderScoreBar(name, value))
     .join("");
   const reasons = engineer.topReasons.map((reason) => `<li>${escapeHtml(reason)}</li>`).join("");
-  const pullRequests = engineer.topPullRequests
+  const contributionCount = engineer.pullRequestCount ?? engineer.contributionCount;
+  const topContributions = engineer.topPullRequests ?? engineer.topContributions;
+  const pullRequests = topContributions
     .map(
       (pullRequest) => `
         <li>
@@ -95,7 +97,7 @@ function renderEngineerCard(engineer, index, sourceType) {
           <img src="${engineer.avatarUrl}" alt="" width="56" height="56" />
           <div>
             <a class="engineer-name" href="${engineer.profileUrl}" target="_blank" rel="noreferrer">${escapeHtml(engineer.login)}</a>
-            <p>${engineer.pullRequestCount} assessed ${contributionLabel}${engineer.pullRequestCount === 1 ? "" : "s"}</p>
+            <p>${contributionCount} assessed ${contributionLabel}${contributionCount === 1 ? "" : "s"}</p>
           </div>
           <div class="impact-score">
             <span>${engineer.impactScore}</span>
@@ -161,7 +163,7 @@ function readWeights() {
 
 function setLoading(isLoading) {
   elements.fetchButton.disabled = isLoading;
-  elements.fetchButton.textContent = isLoading ? "Fetching..." : "Fetch & rank";
+  elements.fetchButton.textContent = isLoading ? "Fetching..." : "Fetch live data";
 }
 
 function setStatus(message) {
@@ -184,6 +186,27 @@ function updateFetchProgress(progress) {
     return;
   }
 
+  if (progress.status === "graphql-commits-fetching") {
+    setStatus(
+      `No merged PRs found in this fork; fetching essential commit fields. ${progress.fetchedCount.toLocaleString()} of ${progress.totalCount.toLocaleString()} commits across ${progress.page} pages.`,
+    );
+    return;
+  }
+
+  if (progress.status === "graphql-scanned") {
+    setStatus(
+      `Scanned essential ${progress.sourceType} fields for ${progress.startDate} through ${progress.endDate}: ${progress.totalCount.toLocaleString()} matched; ${progress.requestCount} GraphQL requests so far.`,
+    );
+    return;
+  }
+
+  if (progress.status === "graphql-fetching") {
+    setStatus(
+      `Fetching essential ${progress.sourceType} fields for ${progress.startDate} through ${progress.endDate}: ${progress.fetchedCount.toLocaleString()} of ${progress.totalCount.toLocaleString()} items; ${progress.requestCount} GraphQL requests so far.`,
+    );
+    return;
+  }
+
   if (progress.status === "scanned") {
     setStatus(
       `Scanning ${progress.startDate} through ${progress.endDate}: ${progress.totalCount.toLocaleString()} matched; ${progress.requestCount} requests so far.`,
@@ -197,11 +220,13 @@ function updateFetchProgress(progress) {
 }
 
 function buildSummary(result) {
+  const source = result.dataSource === "graphql" ? "essential GraphQL fields" : "REST payloads";
+
   if (result.sourceType === "commits") {
-    return `${result.contributions.length.toLocaleString()} eligible commits analyzed from ${result.mergedAfter} through ${result.mergedBefore}; 0 merged PRs were available in this fork.`;
+    return `${result.contributions.length.toLocaleString()} eligible commits analyzed from ${result.mergedAfter} through ${result.mergedBefore}; 0 merged PRs were available in this fork; fetched via ${source}.`;
   }
 
-  return `${result.contributions.length.toLocaleString()} eligible PRs analyzed from ${result.mergedAfter} through ${result.mergedBefore}; ${result.totalMatchingPullRequests.toLocaleString()} matched before filters across ${result.dateWindows.length} date windows.`;
+  return `${result.contributions.length.toLocaleString()} eligible PRs analyzed from ${result.mergedAfter} through ${result.mergedBefore}; ${result.totalMatchingPullRequests.toLocaleString()} matched before filters across ${result.dateWindows.length} date windows; fetched via ${source}.`;
 }
 
 function formatCriterionName(name) {

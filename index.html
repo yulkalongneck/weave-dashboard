@@ -12,7 +12,7 @@
         <div class="repo-block">
           <p class="eyebrow">GitHub repo</p>
           <h1>PostHog engineer impact</h1>
-          <a href="https://github.com/yulkalongneck/posthog" target="_blank" rel="noreferrer">github.com/yulkalongneck/posthog</a>
+          
         </div>
 
         <form id="controls-form" class="controls">
@@ -32,7 +32,7 @@
               name="githubToken"
               type="password"
               autocomplete="off"
-              placeholder="Recommended for full 90+ day collection"
+              placeholder="Use a valid token for faster essential-field GraphQL"
             />
           </label>
 
@@ -41,7 +41,7 @@
             Include outside contributors
           </label>
 
-          <button id="fetch-button" type="submit">Fetch & rank</button>
+          <button id="fetch-button" type="submit">Fetch live data</button>
         </form>
       </section>
 
@@ -72,7 +72,7 @@
       </section>
 
       <section class="status-row" aria-live="polite">
-        <div id="status-message" class="status-message">Ready to fetch merged pull requests from GitHub.</div>
+        <div id="status-message" class="status-message">Ready to fetch live data from GitHub.</div>
         <div id="analysis-summary" class="analysis-summary"></div>
       </section>
 
@@ -83,9 +83,9 @@
         <p>
           This dashboard scores merged PRs from public GitHub metadata. It favors PRs with clear problem and
           change descriptions, focused maintainability work, modularity signals, and concrete testing evidence.
-          Commit counts and lines changed are deliberately excluded from the score. The fetcher pages complete
-          date windows so the selected period is fully covered, with 90 days as the minimum lookback. Forks with
-          no PR records fall back to recent commits from the same repository.
+          Commit counts and lines changed are deliberately excluded from the score. With a valid token, the
+          fetcher uses GitHub GraphQL to request only the fields needed for ranking. Without a token, it falls
+          back to REST. Forks with no PR records fall back to recent commits from the same repository.
         </p>
       </section>
     </main>

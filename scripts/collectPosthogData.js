@@ -45,7 +45,7 @@ const dataset = {
     excludedBots: true,
   },
   dateWindows: result.dateWindows,
-  ranking: rankedEngineers,
+  ranking: compactRanking(rankedEngineers),
   contributions: scoredContributions,
 };
 
@@ -53,27 +53,10 @@ await mkdir("data", { recursive: true });
 
 const suffix = `${result.lookbackDays}d`;
 const datasetPath = path.join("data", `posthog-engineer-impact-${suffix}.json`);
-const summaryPath = path.join("data", `posthog-engineer-impact-${suffix}-summary.json`);
 
 await writeFile(datasetPath, `${JSON.stringify(dataset, null, 2)}\n`);
-await writeFile(
-  summaryPath,
-  `${JSON.stringify(
-    {
-      repository: dataset.repository,
-      generatedAt: dataset.generatedAt,
-      mergedAfter: dataset.mergedAfter,
-      mergedBefore: dataset.mergedBefore,
-      counts: dataset.counts,
-      ranking: dataset.ranking,
-    },
-    null,
-    2,
-  )}\n`,
-);
 
 console.error(`Wrote ${datasetPath}`);
-console.error(`Wrote ${summaryPath}`);
 
 function toScoredContribution(contribution) {
   const score = scorePullRequest(contribution);
@@ -96,6 +79,27 @@ function toScoredContribution(contribution) {
     body: contribution.body ?? "",
     score,
   };
+}
+
+function compactRanking(ranking) {
+  return ranking.map((engineer) => ({
+    login: engineer.login,
+    avatarUrl: engineer.avatarUrl,
+    profileUrl: engineer.profileUrl,
+    impactScore: engineer.impactScore,
+    contributionCount: engineer.pullRequestCount,
+    criteria: engineer.criteria,
+    topReasons: engineer.topReasons,
+    topContributions: engineer.topPullRequests.map((contribution) => ({
+      displayId: contribution.displayId ?? `#${contribution.number}`,
+      title: contribution.title,
+      url: contribution.url,
+      mergedAt: contribution.mergedAt,
+      score: contribution.score,
+      criteria: contribution.criteria,
+      reasons: contribution.reasons,
+    })),
+  }));
 }
 
 function logProgress(progress) {

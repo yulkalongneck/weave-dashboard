@@ -1,9 +1,99 @@
 const GITHUB_API_ROOT = "https://api.github.com";
+const GITHUB_GRAPHQL_ROOT = "https://api.github.com/graphql";
 const REPOSITORY = "yulkalongneck/posthog";
+const [REPOSITORY_OWNER, REPOSITORY_NAME] = REPOSITORY.split("/");
 const MAX_RESULTS_PER_PAGE = 100;
 const MIN_LOOKBACK_DAYS = 90;
 const GITHUB_SEARCH_RESULT_CAP = 1000;
 const MAX_RATE_LIMIT_WAIT_MS = 70_000;
+
+const PULL_REQUEST_SEARCH_QUERY = `
+  query PullRequestSearch($query: String!, $after: String) {
+    rateLimit {
+      limit
+      remaining
+      resetAt
+      cost
+    }
+    search(type: ISSUE, query: $query, first: 100, after: $after) {
+      issueCount
+      pageInfo {
+        hasNextPage
+        endCursor
+      }
+      nodes {
+        ... on PullRequest {
+          number
+          title
+          body
+          url
+          mergedAt
+          authorAssociation
+          comments {
+            totalCount
+          }
+          reactions {
+            totalCount
+          }
+          labels(first: 20) {
+            nodes {
+              name
+            }
+          }
+          author {
+            __typename
+            login
+            avatarUrl
+            url
+          }
+        }
+      }
+    }
+  }
+`;
+
+const COMMIT_HISTORY_QUERY = `
+  query CommitHistory($owner: String!, $name: String!, $since: GitTimestamp!, $until: GitTimestamp!, $after: String) {
+    rateLimit {
+      limit
+      remaining
+      resetAt
+      cost
+    }
+    repository(owner: $owner, name: $name) {
+      defaultBranchRef {
+        target {
+          ... on Commit {
+            history(first: 100, after: $after, since: $since, until: $until) {
+              totalCount
+              pageInfo {
+                hasNextPage
+                endCursor
+              }
+              nodes {
+                oid
+                abbreviatedOid
+                url
+                committedDate
+                messageHeadline
+                messageBody
+                author {
+                  name
+                  email
+                  user {
+                    login
+                    avatarUrl
+                    url
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+`;
 
 export async function fetchMergedPullRequests({
   lookbackDays = MIN_LOOKBACK_DAYS,
@@ -48,6 +138,10 @@ export async function fetchMergedPullRequests({
 }
 
 export async function fetchRepositoryContributions(options) {
+  if (options?.token?.trim()) {
+    return fetchRepositoryContributionsEssential(options);
+  }
+
   const pullRequestResult = await fetchMergedPullRequests(options);
 
   if (pullRequestResult.pullRequests.length > 0) {
@@ -70,6 +164,77 @@ export async function fetchRepositoryContributions(options) {
     rawPullRequestCount: pullRequestResult.rawPullRequestCount,
     dateWindows: pullRequestResult.dateWindows,
     requestCount: pullRequestResult.requestCount + commitResult.requestCount,
+  };
+}
+
+export async function fetchRepositoryContributionsEssential({
+  lookbackDays = MIN_LOOKBACK_DAYS,
+  token,
+  includeContributors = true,
+  fetchImpl = fetch,
+  onProgress = () => {},
+  endDate = new Date(),
+}) {
+  if (!token?.trim()) {
+    throw new Error("A valid GitHub token is required for essential-field GraphQL fetching.");
+  }
+
+  const requestedLookbackDays = Number(lookbackDays);
+  const normalizedLookbackDays = Number.isFinite(requestedLookbackDays)
+    ? Math.max(requestedLookbackDays, MIN_LOOKBACK_DAYS)
+    : MIN_LOOKBACK_DAYS;
+  const mergedAfter = toDateOnly(daysAgo(normalizedLookbackDays, endDate));
+  const mergedBefore = toDateOnly(endDate);
+  const collection = createCollectionTracker(onProgress);
+  const pullRequests = await fetchPullRequestsEssentialForDateRange({
+    startDate: mergedAfter,
+    endDate: mergedBefore,
+    token,
+    fetchImpl,
+    collection,
+  });
+  const eligiblePullRequests = uniquePullRequests(pullRequests)
+    .filter((item) => item.pull_request?.merged_at)
+    .filter((item) => !isBot(item.user))
+    .filter((item) => includeContributors || item.author_association === "MEMBER" || item.author_association === "COLLABORATOR")
+    .sort((left, right) => new Date(right.pull_request.merged_at) - new Date(left.pull_request.merged_at));
+
+  if (eligiblePullRequests.length > 0) {
+    return {
+      mergedAfter,
+      mergedBefore,
+      lookbackDays: normalizedLookbackDays,
+      sourceType: "pullRequests",
+      dataSource: "graphql",
+      totalMatchingPullRequests: collection.totalMatchingPullRequests,
+      totalMatchingContributions: collection.totalMatchingPullRequests,
+      rawPullRequestCount: collection.rawPullRequestCount,
+      requestCount: collection.requestCount,
+      dateWindows: collection.dateWindows,
+      pullRequests: eligiblePullRequests,
+      contributions: eligiblePullRequests,
+    };
+  }
+
+  const commitResult = await fetchRecentCommitsEssential({
+    lookbackDays: normalizedLookbackDays,
+    token,
+    fetchImpl,
+    onProgress,
+    endDate,
+    initialRequestCount: collection.requestCount,
+  });
+
+  return {
+    ...commitResult,
+    sourceType: "commits",
+    dataSource: "graphql",
+    contributions: commitResult.commits,
+    pullRequests: commitResult.commits,
+    totalMatchingPullRequests: collection.totalMatchingPullRequests,
+    rawPullRequestCount: collection.rawPullRequestCount,
+    dateWindows: collection.dateWindows,
+    requestCount: collection.requestCount + commitResult.requestCount,
   };
 }
 
@@ -125,6 +290,172 @@ export async function fetchRecentCommits({
       .filter((commit) => !isBot(commit.user))
       .sort((left, right) => new Date(right.pull_request.merged_at) - new Date(left.pull_request.merged_at)),
   };
+}
+
+async function fetchPullRequestsEssentialForDateRange({ startDate, endDate, token, fetchImpl, collection }) {
+  const firstPage = await fetchPullRequestEssentialPage({ startDate, endDate, after: null, token, fetchImpl, collection });
+  const totalCount = firstPage.search.issueCount ?? 0;
+
+  collection.onProgress({
+    status: "graphql-scanned",
+    sourceType: "pullRequests",
+    startDate,
+    endDate,
+    totalCount,
+    requestCount: collection.requestCount,
+  });
+
+  if (totalCount > GITHUB_SEARCH_RESULT_CAP) {
+    const split = splitDateRange(startDate, endDate);
+
+    if (!split) {
+      throw new Error(
+        `GitHub returned more than ${GITHUB_SEARCH_RESULT_CAP} merged PRs for ${startDate}. Use a narrower date window.`,
+      );
+    }
+
+    const leftItems = await fetchPullRequestsEssentialForDateRange({
+      startDate: split.left.startDate,
+      endDate: split.left.endDate,
+      token,
+      fetchImpl,
+      collection,
+    });
+    const rightItems = await fetchPullRequestsEssentialForDateRange({
+      startDate: split.right.startDate,
+      endDate: split.right.endDate,
+      token,
+      fetchImpl,
+      collection,
+    });
+
+    return [...leftItems, ...rightItems];
+  }
+
+  collection.totalMatchingPullRequests += totalCount;
+  collection.rawPullRequestCount += firstPage.search.nodes.length;
+  collection.dateWindows.push({ startDate, endDate, totalCount });
+
+  const items = firstPage.search.nodes.map(normalizeGraphQlPullRequest);
+  let pageInfo = firstPage.search.pageInfo;
+
+  while (pageInfo.hasNextPage) {
+    const pagePayload = await fetchPullRequestEssentialPage({
+      startDate,
+      endDate,
+      after: pageInfo.endCursor,
+      token,
+      fetchImpl,
+      collection,
+    });
+
+    items.push(...pagePayload.search.nodes.map(normalizeGraphQlPullRequest));
+    collection.rawPullRequestCount += pagePayload.search.nodes.length;
+    pageInfo = pagePayload.search.pageInfo;
+    collection.onProgress({
+      status: "graphql-fetching",
+      sourceType: "pullRequests",
+      startDate,
+      endDate,
+      totalCount,
+      fetchedCount: items.length,
+      requestCount: collection.requestCount,
+    });
+  }
+
+  return items;
+}
+
+async function fetchPullRequestEssentialPage({ startDate, endDate, after, token, fetchImpl, collection }) {
+  const query = `repo:${REPOSITORY} is:pr is:merged merged:${startDate}..${endDate}`;
+  const payload = await fetchGitHubGraphQL({
+    query: PULL_REQUEST_SEARCH_QUERY,
+    variables: { query, after },
+    token,
+    fetchImpl,
+    collection,
+    rateLimitContext: { sourceType: "pullRequests", startDate, endDate },
+  });
+
+  return payload.data;
+}
+
+export async function fetchRecentCommitsEssential({
+  lookbackDays = MIN_LOOKBACK_DAYS,
+  token,
+  fetchImpl = fetch,
+  onProgress = () => {},
+  endDate = new Date(),
+}) {
+  const requestedLookbackDays = Number(lookbackDays);
+  const normalizedLookbackDays = Number.isFinite(requestedLookbackDays)
+    ? Math.max(requestedLookbackDays, MIN_LOOKBACK_DAYS)
+    : MIN_LOOKBACK_DAYS;
+  const sinceDate = toDateOnly(daysAgo(normalizedLookbackDays, endDate));
+  const untilDate = toDateOnly(endDate);
+  const collection = createCollectionTracker(onProgress);
+  const commits = [];
+  let after = null;
+  let totalCount = 0;
+  let page = 0;
+  let hasNextPage = true;
+
+  while (hasNextPage) {
+    page += 1;
+    const payload = await fetchCommitEssentialPage({
+      sinceDate,
+      untilDate,
+      after,
+      token,
+      fetchImpl,
+      collection,
+    });
+    const history = payload.repository.defaultBranchRef.target.history;
+    totalCount = history.totalCount;
+    commits.push(...history.nodes.map(normalizeGraphQlCommit));
+    hasNextPage = history.pageInfo.hasNextPage;
+    after = history.pageInfo.endCursor;
+    collection.onProgress({
+      status: "graphql-commits-fetching",
+      page,
+      totalCount,
+      fetchedCount: commits.length,
+      requestCount: collection.requestCount,
+    });
+  }
+
+  return {
+    mergedAfter: sinceDate,
+    mergedBefore: untilDate,
+    lookbackDays: normalizedLookbackDays,
+    totalMatchingContributions: totalCount,
+    rawCommitCount: commits.length,
+    requestCount: collection.requestCount,
+    commitPages: page,
+    commits: uniqueCommits(commits)
+      .filter((commit) => commit.pull_request?.merged_at)
+      .filter((commit) => !isBot(commit.user))
+      .sort((left, right) => new Date(right.pull_request.merged_at) - new Date(left.pull_request.merged_at)),
+  };
+}
+
+async function fetchCommitEssentialPage({ sinceDate, untilDate, after, token, fetchImpl, collection }) {
+  const payload = await fetchGitHubGraphQL({
+    query: COMMIT_HISTORY_QUERY,
+    variables: {
+      owner: REPOSITORY_OWNER,
+      name: REPOSITORY_NAME,
+      since: `${sinceDate}T00:00:00Z`,
+      until: `${untilDate}T23:59:59Z`,
+      after,
+    },
+    token,
+    fetchImpl,
+    collection,
+    rateLimitContext: { sourceType: "commits" },
+  });
+
+  return payload.data;
 }
 
 async function fetchPullRequestsForDateRange({ startDate, endDate, token, fetchImpl, collection }) {
@@ -255,10 +586,62 @@ async function fetchGitHubJson({ url, token, fetchImpl, collection, rateLimitCon
   }
 }
 
+async function fetchGitHubGraphQL({ query, variables, token, fetchImpl, collection, rateLimitContext }) {
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const response = await fetchImpl(GITHUB_GRAPHQL_ROOT, {
+      method: "POST",
+      headers: buildGraphQlHeaders(token),
+      body: JSON.stringify({ query, variables }),
+    });
+
+    collection.requestCount += 1;
+
+    if (isRetryableRateLimit(response)) {
+      const waitMs = getRateLimitWaitMs(response);
+
+      if (attempt === 0 && waitMs <= MAX_RATE_LIMIT_WAIT_MS) {
+        collection.onProgress({
+          status: "rate-limited",
+          ...rateLimitContext,
+          waitMs,
+          requestCount: collection.requestCount,
+        });
+        await delay(waitMs);
+        continue;
+      }
+    }
+
+    if (!response.ok) {
+      throw await buildGitHubError(response);
+    }
+
+    const payload = await response.json();
+
+    if (payload.errors?.length) {
+      throw buildGraphQlError(payload.errors);
+    }
+
+    return payload;
+  }
+}
+
 function buildHeaders(token) {
   const headers = {
     Accept: "application/vnd.github+json",
     "X-GitHub-Api-Version": "2022-11-28",
+  };
+
+  if (token) {
+    headers.Authorization = `Bearer ${token}`;
+  }
+
+  return headers;
+}
+
+function buildGraphQlHeaders(token) {
+  const headers = {
+    Accept: "application/vnd.github+json",
+    "Content-Type": "application/json",
   };
 
   if (token) {
@@ -285,6 +668,17 @@ async function buildGitHubError(response) {
   }
 
   return new Error(message);
+}
+
+function buildGraphQlError(errors) {
+  const message = errors.map((error) => error.message).join("; ");
+  const isCredentialError = errors.some((error) => /credential|authorization|token/i.test(error.message));
+
+  return new Error(
+    isCredentialError
+      ? `${message} Check that the GitHub token is valid and has access to this repository.`
+      : `GitHub GraphQL request failed: ${message}`,
+  );
 }
 
 function isBot(user) {
@@ -324,6 +718,78 @@ function normalizeCommit(commit) {
       merged_at: authoredAt,
     },
     contributionType: "commit",
+  };
+}
+
+function normalizeGraphQlPullRequest(pullRequest) {
+  return {
+    number: pullRequest.number,
+    title: pullRequest.title,
+    body: pullRequest.body ?? "",
+    html_url: pullRequest.url,
+    labels: pullRequest.labels.nodes.map((label) => ({ name: label.name })),
+    comments: pullRequest.comments.totalCount,
+    reactions: {
+      total_count: pullRequest.reactions.totalCount,
+    },
+    author_association: pullRequest.authorAssociation,
+    user: normalizeGraphQlActor(pullRequest.author, pullRequest.url),
+    pull_request: {
+      merged_at: pullRequest.mergedAt,
+    },
+    contributionType: "pullRequest",
+  };
+}
+
+function normalizeGraphQlCommit(commit) {
+  const fallbackLogin = commit.author?.name ?? "unknown";
+  const user = commit.author?.user
+    ? {
+        login: commit.author.user.login,
+        type: commit.author.user.login.endsWith("[bot]") ? "Bot" : "User",
+        avatar_url: commit.author.user.avatarUrl,
+        html_url: commit.author.user.url,
+      }
+    : {
+        login: fallbackLogin,
+        type: fallbackLogin.includes("[bot]") ? "Bot" : "User",
+        avatar_url: "",
+        html_url: commit.url,
+      };
+
+  return {
+    sha: commit.oid,
+    number: commit.abbreviatedOid,
+    displayId: commit.abbreviatedOid,
+    title: commit.messageHeadline,
+    body: commit.messageBody ?? "",
+    html_url: commit.url,
+    labels: [],
+    comments: 0,
+    author_association: "COMMIT_AUTHOR",
+    user,
+    pull_request: {
+      merged_at: commit.committedDate,
+    },
+    contributionType: "commit",
+  };
+}
+
+function normalizeGraphQlActor(actor, fallbackUrl) {
+  if (!actor) {
+    return {
+      login: "unknown",
+      type: "User",
+      avatar_url: "",
+      html_url: fallbackUrl,
+    };
+  }
+
+  return {
+    login: actor.login,
+    type: actor.__typename === "Bot" || actor.login.endsWith("[bot]") ? "Bot" : "User",
+    avatar_url: actor.avatarUrl,
+    html_url: actor.url,
   };
 }
 

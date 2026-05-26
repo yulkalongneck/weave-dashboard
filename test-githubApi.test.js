@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { fetchMergedPullRequests } from "./src/githubApi.js";
+import { fetchMergedPullRequests, fetchRepositoryContributionsEssential } from "./src/githubApi.js";
 
 test("fetches all pages across split date windows instead of sampling the first page", async () => {
   const requests = [];
@@ -40,6 +40,102 @@ test("fetches all pages across split date windows instead of sampling the first 
     requests.map((request) => `${request.range}:${request.page}`),
     ["2026-01-10..2026-04-10:1", "2026-01-10..2026-02-24:1", "2026-01-10..2026-02-24:2", "2026-02-25..2026-04-10:1"],
   );
+});
+
+test("uses GraphQL essential fields for token-backed contribution fetching", async () => {
+  const requests = [];
+  const fetchImpl = async (url, options) => {
+    const body = JSON.parse(options.body);
+    requests.push({ url, body });
+
+    return {
+      ok: true,
+      status: 200,
+      headers: new Map(),
+      async json() {
+        if (body.query.includes("PullRequestSearch")) {
+          return {
+            data: {
+              rateLimit: { limit: 5000, remaining: 4999, resetAt: "2026-04-10T01:00:00Z", cost: 1 },
+              search: {
+                issueCount: 0,
+                pageInfo: { hasNextPage: false, endCursor: null },
+                nodes: [],
+              },
+            },
+          };
+        }
+
+        return {
+          data: {
+            rateLimit: { limit: 5000, remaining: 4998, resetAt: "2026-04-10T01:00:00Z", cost: 1 },
+            repository: {
+              defaultBranchRef: {
+                target: {
+                  history: {
+                    totalCount: 2,
+                    pageInfo: { hasNextPage: false, endCursor: null },
+                    nodes: [
+                      {
+                        oid: "abcdef123456",
+                        abbreviatedOid: "abcdef1",
+                        url: "https://github.com/yulkalongneck/posthog/commit/abcdef123456",
+                        committedDate: "2026-04-01T00:00:00Z",
+                        messageHeadline: "fix(flags): clarify rollout validation",
+                        messageBody: "## Problem\nBad validation.\n\n## Changes\nAdded explicit validation.\n\n## How did you test this code?\nAdded unit tests.",
+                        author: {
+                          name: "Engineer",
+                          email: "engineer@example.com",
+                          user: {
+                            login: "engineer",
+                            avatarUrl: "https://example.com/avatar.png",
+                            url: "https://github.com/engineer",
+                          },
+                        },
+                      },
+                      {
+                        oid: "botdef123456",
+                        abbreviatedOid: "botdef1",
+                        url: "https://github.com/yulkalongneck/posthog/commit/botdef123456",
+                        committedDate: "2026-04-01T00:00:00Z",
+                        messageHeadline: "chore: generated update",
+                        messageBody: "",
+                        author: {
+                          name: "dependabot[bot]",
+                          email: "bot@example.com",
+                          user: {
+                            login: "dependabot[bot]",
+                            avatarUrl: "https://example.com/bot.png",
+                            url: "https://github.com/apps/dependabot",
+                          },
+                        },
+                      },
+                    ],
+                  },
+                },
+              },
+            },
+          },
+        };
+      },
+    };
+  };
+
+  const result = await fetchRepositoryContributionsEssential({
+    lookbackDays: 90,
+    token: "valid-token",
+    fetchImpl,
+    endDate: new Date("2026-04-10T00:00:00Z"),
+  });
+
+  assert.equal(result.dataSource, "graphql");
+  assert.equal(result.sourceType, "commits");
+  assert.equal(result.requestCount, 2);
+  assert.equal(result.totalMatchingPullRequests, 0);
+  assert.equal(result.totalMatchingContributions, 2);
+  assert.equal(result.contributions.length, 1);
+  assert.equal(result.contributions[0].title, "fix(flags): clarify rollout validation");
+  assert.ok(requests.every((request) => request.url === "https://api.github.com/graphql"));
 });
 
 function parseRequest(url) {
