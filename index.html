@@ -10,9 +10,7 @@
     <main class="app-shell">
       <section class="toolbar" aria-label="Analysis controls">
         <div class="repo-block">
-          <p class="eyebrow">GitHub repo</p>
           <h1>PostHog engineer impact</h1>
-          
         </div>
 
         <form id="controls-form" class="controls">
@@ -32,7 +30,7 @@
               name="githubToken"
               type="password"
               autocomplete="off"
-              placeholder="Use a valid token for faster live fetching"
+              placeholder="Use a valid token for faster essential-field GraphQL"
             />
           </label>
 
@@ -43,6 +41,17 @@
 
           <button id="fetch-button" type="submit">Fetch live data</button>
         </form>
+      </section>
+
+      <section class="method-panel" aria-label="Methodology">
+        <h2>Impact model</h2>
+        <p>
+          This dashboard scores merged PRs from public GitHub metadata. It favors PRs with clear problem and
+          change descriptions, focused maintainability work, modularity signals, and concrete testing evidence.
+          Commit counts and lines changed are deliberately excluded from the score. With a valid token, PR
+          metadata is fetched through GitHub GraphQL, and commit-heavy forks use parallel REST pagination after
+          discovering the last page. Without a token, the app falls back to slower REST-only fetching.
+        </p>
       </section>
 
       <section class="score-settings" aria-label="Score weighting">
@@ -77,17 +86,6 @@
       </section>
 
       <section id="ranking" class="ranking" aria-label="Top 5 engineers"></section>
-
-      <section class="method-panel" aria-label="Methodology">
-        <h2>Impact model</h2>
-        <p>
-          This dashboard scores merged PRs from public GitHub metadata. It favors PRs with clear problem and
-          change descriptions, focused maintainability work, modularity signals, and concrete testing evidence.
-          Commit counts and lines changed are deliberately excluded from the score. With a valid token, PR
-          metadata is fetched through GitHub GraphQL, and commit-heavy forks use parallel REST pagination after
-          discovering the last page. Without a token, the app falls back to slower REST-only fetching.
-        </p>
-      </section>
     </main>
 
     <script type="module" src="./src/app.js"></script>
